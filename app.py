@@ -4,170 +4,152 @@ import numpy as np
 from datetime import datetime, timedelta
 import random
 
-# --------- FIX: Use built-in Plotly that comes with Streamlit ---------
-import plotly.express as px
-import plotly.graph_objects as go
+# --------------------------- PAGE CONFIG ---------------------------
+st.set_page_config(page_title="EWU FUB BEMS", layout="wide", initial_sidebar_state="expanded")
 
-# --------------------------- CONFIG ---------------------------
-st.set_page_config(page_title="EWU FUB - BEMS", layout="wide", initial_sidebar_state="expanded")
-
-# Building Structure
+# --------------------------- BUILDING LAYOUT ---------------------------
 FLOORS = [f"Floor {i}" for i in range(1, 11)]
 ROOMS_PER_FLOOR = 8
 rooms = [f"FUB-{str(i).zfill(2)}{str(j).zfill(2)}" for i in range(1, 11) for j in range(1, ROOMS_PER_FLOOR + 1)]
 
-# ------------------- Generate 2 Weeks Synthetic Data -------------------
+# --------------------------- GENERATE 2 WEEKS DATA ---------------------------
 @st.cache_data
 def generate_data():
     start = datetime(2025, 11, 1)
     end = datetime(2025, 11, 15, 23, 59)
-    timestamps = pd.date_range(start, end, freq='1min')
+    ts = pd.date_range(start, end, freq='1min')
     
     data = []
     np.random.seed(42)
     
     for room in rooms:
-        base_power = random.uniform(900, 2200)  # Typical AC power
-        
-        for ts in timestamps:
-            weekday = ts.weekday()
-            hour = ts.hour
-            
-            # Schedule: Mon–Fri 8 AM – 6 PM only (20% savings logic)
-            if weekday >= 5 or hour < 8 or hour >= 18:
+        base = random.uniform(1000, 2200)
+        for t in ts:
+            wd, h = t.weekday(), t.hour
+            if wd >= 5 or h < 8 or h >= 18:
                 power = 0
-            elif 12 <= hour < 14:
-                power = base_power * random.uniform(0.3, 0.6)  # Lunch break
+            elif 12 <= h < 14:
+                power = base * random.uniform(0.3, 0.6)
             else:
-                power = base_power * random.uniform(0.85, 1.15)
-            
-            voltage = random.uniform(218, 232)
-            current = power / voltage if power > 0 else 0
-            energy_min = power / 1000 / 60  # kWh per minute
+                power = base * random.uniform(0.9, 1.1)
+                
+            voltage = random.uniform(220, 230)
+            current = round(power / voltage, 3) if power > 0 else 0
+            energy_min = power / 60000  # kWh per minute
             
             data.append({
-                "timestamp": ts,
+                "timestamp": t,
                 "room": room,
-                "floor": room[4:6].lstrip("0") or "0",
+                "floor": room[4:6],
                 "voltage": round(voltage, 2),
-                "current": round(current, 3),
+                "current": current,
                 "power": round(power, 1),
                 "energy_kwh": energy_min,
                 "status": "ON" if power > 100 else "OFF"
             })
-    
     return pd.DataFrame(data)
 
 df = generate_data()
-
-# Pre-calculate daily totals
 df["date"] = df["timestamp"].dt.date
-daily = df.groupby(["room", "date"]).agg({
-    "energy_kwh": "sum",
-    "power": "mean"
-}).reset_index()
-daily["cost_bdt"] = daily["energy_kwh"] * 8.5
-daily["co2_g"] = daily["energy_kwh"] * 720
-
-# Merge back for easy access
-df = df.merge(daily[["room", "date", "cost_bdt", "co2_g"]], on=["room", "date"], how="left")
+daily = df.groupby(["room", "date"])["energy_kwh"].sum().reset_index()
+daily["cost"] = daily["energy_kwh"] * 8.5
+daily["co2_kg"] = daily["energy_kwh"] * 0.72
+df = df.merge(daily[["room","date","cost","co2_kg"]], on=["room","date"], how="left")
 
 # --------------------------- SIDEBAR ---------------------------
-st.sidebar.image("https://www.ewubd.edu/themes/custom/ewu/logo.png", width=180)
-st.sidebar.title("FUB - BEMS")
-page = st.sidebar.radio("Go to", ["Building Overview", "Floor View", "Room Detail", "Schedules"])
+st.sidebar.image("https://www.ewubd.edu/themes/custom/ewu/logo.png", width=200)
+st.sidebar.title("FUB BEMS")
+page = st.sidebar.radio("Navigation", ["Building Overview", "Floor View", "Room Detail", "Schedules"])
 
 # --------------------------- BUILDING OVERVIEW ---------------------------
 if page == "Building Overview":
     st.title("FUB Building Energy Management System")
-    st.markdown("**Real-time & Historical Energy Dashboard** | 01–15 Nov 2025")
+    st.markdown("**Real-time Monitoring Dashboard • 01–15 Nov 2025**")
 
     today = datetime.today().date()
     today_df = df[df["date"] == today]
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Live Power", f"{df[df['status']=='ON']['power'].sum():,.0f} W")
-    c2.metric("Today Energy", f"{today_df['energy_kwh'].sum():.2f} kWh")
-    c3.metric("Today Cost", f"৳{today_df['cost_bdt'].sum():,.0f}")
-    c4.metric("Today CO₂", f"{today_df['co2_g'].sum()/1000:,.1f} kg")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Live Power", f"{df[df['status']=='ON']['power'].sum():,.0f} W")
+    col2.metric("Today's Energy", f"{today_df['energy_kwh'].sum():.2f} kWh")
+    col3.metric("Today's Cost", f"৳{today_df['cost'].sum():,.0f}")
+    col4.metric("Today's CO₂", f"{today_df['co2_kg'].sum():.1f} kg")
 
-    st.markdown("### Select Floor")
+    st.markdown("### Click a Floor")
     cols = st.columns(5)
-    for idx, floor in enumerate(FLOORS):
+    for i, floor in enumerate(FLOORS):
         floor_num = floor.split()[1]
-        floor_data = df[df["floor"] == floor_num]
-        avg_power = floor_data[floor_data["date"] == today]["power"].mean()
-        with cols[idx % 5]:
-            if st.button(f"{floor}\n≈{avg_power:.0f} W", key=floor):
-                st.session_state.selected_floor = floor
-                st.switch_page("Floor View")
+        floor_data = df[df["floor"] == floor_num.zfill(2)]
+        avg_w = floor_data[floor_data["date"]==today]["power"].mean()
+        with cols[i % 5]:
+            if st.button(f"{floor}\n~{avg_w:.0f} W avg", key=floor):
+                st.session_state.floor = floor
+                st.rerun()
 
 # --------------------------- FLOOR VIEW ---------------------------
 elif page == "Floor View":
-    floor = st.selectbox("Floor", FLOORS, key="floor_select")
-    floor_num = floor.split()[1]
-    floor_rooms = [r for r in rooms if r[4:6] == floor_num.zfill(2)]
+    floor = st.selectbox("Select Floor", FLOORS)
+    floor_code = floor.split()[1].zfill(2)
+    floor_rooms = [r for r in rooms if r.startswith(f"FUB-{floor_code}")]
 
-    st.title(f"{floor} – Room Status")
+    st.title(f"{floor} – All Rooms")
 
     cols = st.columns(4)
-    for i, room in enumerate(floor_rooms):
-        latest = df[df["room"] == room].sort_values("timestamp").iloc[-1]
-        color = "#27AE60" if latest["status"] == "ON" else "#E74C3C"
-        with cols[i % 4]:
-            if st.button(f"**{room}**\n{latest['power']:.0f} W\n{latest['status']}", 
-                        key=room, help="Click for details"):
-                st.session_state.selected_room = room
+    for idx, room in enumerate(floor_rooms):
+        latest = df[df["room"]==room].sort_values("timestamp").iloc[-1]
+        color = "🟢" if latest["status"]=="ON" else "🔴"
+        with cols[idx % 4]:
+            if st.button(f"{color} **{room}**\n{latest['power']:.0f} W", key=room):
+                st.session_state.room = room
                 st.rerun()
-    
-    if "selected_room" in st.session_state and st.session_state.selected_room in floor_rooms:
-        st.switch_page("Room Detail")
+
+    if "room" in st.session_state and st.session_state.room in floor_rooms:
+        page = "Room Detail"
+        st.rerun()
 
 # --------------------------- ROOM DETAIL ---------------------------
 elif page == "Room Detail":
-    room = st.selectbox("Room", rooms, index=rooms.index(st.session_state.get("selected_room", rooms[0])))
-    room_data = df[df["room"] == room].copy()
+    room = st.selectbox("Room", rooms, index=rooms.index(st.session_state.get("room", rooms[0])))
+    data = df[df["room"] == room].copy()
 
-    st.title(f"Room {room} – Detailed Dashboard")
+    st.title(f"Room {room} – Detailed View")
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("From", datetime(2025, 11, 1))
+        start = st.date_input("Start", datetime(2025,11,1))
     with col2:
-        end_date = st.date_input("To", datetime(2025, 11, 15))
+        end = st.date_input("End", datetime(2025,11,15))
 
-    filtered = room_data[(room_data["timestamp"].dt.date >= start_date) & 
-                        (room_data["timestamp"].dt.date <= end_date)]
-
+    mask = (data["timestamp"].dt.date >= start) & (data["timestamp"].dt.date <= end)
+    filtered = data[mask]
     latest = filtered.iloc[-1]
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+    c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("Voltage", f"{latest.voltage} V")
     c2.metric("Current", f"{latest.current} A")
     c3.metric("Power", f"{latest.power:.0f} W")
-    c4.metric("Status", latest.status)
-    c5.metric("Est. Bill", f"৳{filtered['cost_bdt'].sum():,.0f}")
-    c6.metric("CO₂", f"{filtered['co2_g'].sum()/1000:.1f} kg")
+    c4.metric("Cost (Period)", f"৳{filtered['cost'].sum():,.0f}")
+    c5.metric("CO₂ (Period)", f"{filtered['co2_kg'].sum():.1f} kg")
 
-    st.plotly_chart(px.line(filtered, x="timestamp", y="power", 
-                           title="Real-time Power (W)"), use_container_width=True)
-    
-    hourly = filtered.set_index("timestamp").resample("1H")["energy_kwh"].sum().reset_index()
-    st.plotly_chart(px.bar(hourly, x="timestamp", y="energy_kwh", 
-                          title="Hourly Energy Consumption (kWh)"), use_container_width=True)
+    # Built-in Streamlit charts (no Plotly!)
+    st.subheader("Power Trend")
+    chart_data = filtered.set_index("timestamp")[["power"]].resample("10min").mean()
+    st.line_chart(chart_data)
 
-    st.markdown("### Manual Control (Demo)")
-    if st.button(f"Turn AC {'OFF' if latest.status=='ON' else 'ON'}"):
-        st.success(f"AC in {room} turned {'OFF' if latest.status=='ON' else 'ON'}!")
+    st.subheader("Daily Energy (kWh)")
+    daily_chart = filtered.groupby("date")["energy_kwh"].sum()
+    st.bar_chart(daily_chart)
+
+    st.markdown("### Manual Control")
+    action = "OFF" if latest.status == "ON" else "ON"
+    if st.button(f"Turn AC {action}"):
+        st.success(f"AC in {room} turned {action}!")
 
 # --------------------------- SCHEDULES ---------------------------
 else:
     st.title("Scheduled Automation")
-    st.success("All ACs automatically turn OFF outside 8:00 AM – 6:00 PM on weekdays")
-    st.info("20% estimated electricity savings achieved through scheduling")
-    st.dataframe(pd.DataFrame({
-        "Rule": ["Weekday Schedule", "Weekend", "Lunch Break"],
-        "Time": ["08:00–18:00", "OFF", "50% Power"],
-        "Status": ["Active", "Active", "Active"]
-    }))
+    st.success("All ACs automatically OFF outside 8 AM – 6 PM (Mon–Fri)")
+    st.info("Estimated savings: ~20%")
+    st.image("https://via.placeholder.com/800x400?text=Schedule+Graph+Here")
 
-st.caption("EWU CSE407 Green Computing – Midterm Project Demo | Nov 2025")
+st.caption("EWU CSE407 Green Computing • Midterm Project • Nov 2025 • Synthetic Data")
